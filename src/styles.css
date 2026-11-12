@@ -4394,7 +4394,9 @@ dialog.cv-card::backdrop {
 }
 /* ==========================================================================
    11. Reels (short videos under the hero)
-   Uses --ang from section 7 (@property) for the rotating edge.
+   Light on purpose: no mask-image, no always-running animation and no
+   transform on a card that is playing, because those can make iframes and
+   videos draw blank in Safari and Chrome.
    ========================================================================== */
 
 /* ---------- Section ---------- */
@@ -4406,7 +4408,7 @@ dialog.cv-card::backdrop {
   overflow: hidden;
 }
 
-/* Soft colour wash behind the section */
+/* Soft colour wash behind the section (gradients are already soft, no blur) */
 .reels::before {
   content: "";
   position: absolute;
@@ -4417,7 +4419,6 @@ dialog.cv-card::backdrop {
   background:
     radial-gradient(40% 60% at 20% 30%, color-mix(in srgb, var(--c1) 22%, transparent), transparent 70%),
     radial-gradient(40% 60% at 80% 40%, color-mix(in srgb, var(--c2) 20%, transparent), transparent 70%);
-  filter: blur(40px);
   opacity: .7;
 }
 
@@ -4429,6 +4430,10 @@ dialog.cv-card::backdrop {
 /* ---------- Heading ---------- */
 
 .reels-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
   max-width: 1100px;
   margin: 0 auto 1.5rem;
 }
@@ -4447,7 +4452,6 @@ dialog.cv-card::backdrop {
   color: transparent;
 }
 
-/* Pulsing "live" dot */
 .reels-head h2::before {
   content: "";
   flex: none;
@@ -4455,8 +4459,6 @@ dialog.cv-card::backdrop {
   height: .6rem;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
-  animation: reel-live 1.8s ease-out infinite;
 }
 
 .reels-head p {
@@ -4464,9 +4466,42 @@ dialog.cv-card::backdrop {
   color: var(--muted);
 }
 
-/* ---------- Scrolling row ----------
-   No mask-image here: Safari can hide or mis-measure iframes inside a
-   masked scroller. */
+/* Arrow buttons (hidden on touch screens, where people swipe) */
+.reels-nav {
+  display: flex;
+  flex: none;
+  gap: .5rem;
+}
+
+.reels-nav button {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0 0 .15rem;
+  font: 400 1.5rem/1 var(--body);
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background .2s, color .2s, border-color .2s;
+}
+
+.reels-nav button:hover,
+.reels-nav button:focus-visible {
+  color: #fff;
+  background: var(--accent);
+  border-color: transparent;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .reels-nav {
+    display: none;
+  }
+}
+
+/* ---------- Scrolling row ---------- */
 
 .reels-row {
   max-width: 1100px;
@@ -4482,7 +4517,8 @@ dialog.cv-card::backdrop {
   scroll-snap-type: x mandatory;
   scroll-padding-inline: 1.5rem;
   overscroll-behavior-x: contain;
-  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) transparent;
   counter-reset: reel;
 }
 
@@ -4500,9 +4536,7 @@ dialog.cv-card::backdrop {
   border-radius: 999px;
 }
 
-/* ---------- Card ----------
-   No always-running animation here (it made Safari draw iframes blank).
-   The glow and the rainbow edge only animate on hover. */
+/* ---------- Card ---------- */
 
 .reel {
   position: relative;
@@ -4512,14 +4546,13 @@ dialog.cv-card::backdrop {
   min-width: 0;
   overflow: hidden;
   isolation: isolate;
-  transform: translateZ(0);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 18px;
   scroll-snap-align: start;
   counter-increment: reel;
   box-shadow: 0 10px 30px -22px rgba(0, 0, 0, .9);
-  transition: transform .35s cubic-bezier(.2, .8, .2, 1), box-shadow .35s, border-color .35s;
+  transition: transform .3s cubic-bezier(.2, .8, .2, 1), box-shadow .3s, border-color .3s;
 }
 
 /* Each card gets its own glow colour */
@@ -4529,39 +4562,30 @@ dialog.cv-card::backdrop {
 .reel:nth-child(5n+4) { --k: var(--c4); }
 .reel:nth-child(5n+5) { --k: var(--c5); }
 
-.reel:hover,
+/* Glow: on hover (real mouse only) and on keyboard focus.
+   The lift never applies to a card that is playing. */
+@media (hover: hover) {
+  .reel:not(.is-playing):hover {
+    transform: translateY(-6px);
+  }
+
+  .reel:hover {
+    border-color: color-mix(in srgb, var(--k, var(--accent)) 60%, var(--line));
+    box-shadow:
+      0 0 30px -4px color-mix(in srgb, var(--k, var(--accent)) 55%, transparent),
+      0 24px 50px -16px rgba(0, 0, 0, .7);
+  }
+
+  .reel:hover .reel-info h3 {
+    color: var(--k, var(--accent));
+  }
+}
+
 .reel:focus-within {
-  transform: translateY(-8px);
   border-color: color-mix(in srgb, var(--k, var(--accent)) 60%, var(--line));
-  box-shadow:
-    0 0 30px -4px color-mix(in srgb, var(--k, var(--accent)) 55%, transparent),
-    0 24px 50px -16px rgba(0, 0, 0, .7);
 }
 
-/* Rotating rainbow edge: only exists on hover */
-.reel:not(.skeleton)::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  padding: 2px;
-  border-radius: inherit;
-  background: conic-gradient(from var(--ang), var(--c1), var(--c5), var(--c2), var(--c3), var(--c4), var(--c1));
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .3s;
-}
-
-.reel:hover::before,
-.reel:focus-within::before {
-  opacity: 1;
-  animation: reel-edge 3s linear infinite;
-}
-
-/* Number badge: 01, 02, 03 ... */
+/* Number badge: 01, 02, 03 ... (hidden while playing so it never covers the player) */
 .reel:not(.skeleton)::after {
   content: counter(reel, decimal-leading-zero);
   position: absolute;
@@ -4575,20 +4599,15 @@ dialog.cv-card::backdrop {
   background: rgba(10, 12, 20, .7);
   border: 1px solid color-mix(in srgb, var(--k, var(--accent)) 70%, transparent);
   border-radius: 999px;
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
   pointer-events: none;
-  transition: background .2s;
+  transition: opacity .2s;
 }
 
-.reel:hover::after,
-.reel:focus-within::after {
-  background: var(--k, var(--accent));
+.reel.is-playing::after {
+  opacity: 0;
 }
 
-/* ---------- Video frame (vertical 9:16) ----------
-   The mask is the Safari fix: without it Safari ignores the rounded
-   clipping and can show iframes/videos blank or unclipped. */
+/* ---------- Video frame (vertical 9:16) ---------- */
 
 .reel-frame {
   position: relative;
@@ -4597,22 +4616,10 @@ dialog.cv-card::backdrop {
   overflow: hidden;
   background: #000;
   border-radius: 17px 17px 0 0;
-  -webkit-mask-image: -webkit-radial-gradient(white, black);
 }
 
 .reel-frame:only-child {
   border-radius: 17px;
-}
-
-/* Soft fade at the bottom so the frame blends into the info area */
-.reel-frame::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 0;
-  z-index: 1;
-  height: 28%;
-  background: linear-gradient(to top, color-mix(in srgb, var(--surface) 70%, transparent), transparent);
-  pointer-events: none;
 }
 
 /* Scoped to the reel frame so the hero video is not affected. */
@@ -4634,65 +4641,140 @@ dialog.cv-card::backdrop {
   object-fit: cover;
 }
 
-/* ---------- Messages inside the frame ----------
-   Shared layout for the loading cover and the "cannot embed" fallbacks. */
+/* ---------- Cover (play button, poster, loading message) ---------- */
 
-.reel-loader,
-.reel-link,
-.reel-unavailable {
+.reel-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
   display: grid;
-  align-content: center;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(80% 60% at 50% 0%, color-mix(in srgb, var(--k, var(--accent)) 35%, transparent), transparent 70%),
+    var(--bay, #111);
+}
+
+.reel-poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+}
+
+/* Darken the poster a little while the player loads */
+.reel-cover.is-loading::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 12, 20, .55);
+}
+
+/* Play button: the whole cover is clickable */
+.reel-play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.reel-play-icon {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  background: rgba(10, 12, 20, .6);
+  border: 1px solid rgba(255, 255, 255, .5);
+  border-radius: 50%;
+  transition: transform .2s, background .2s;
+}
+
+.reel-play-icon::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -35% -50%;
+  border-style: solid;
+  border-width: 11px 0 11px 18px;
+  border-color: transparent transparent transparent #fff;
+}
+
+.reel-play:hover .reel-play-icon,
+.reel-play:focus-visible .reel-play-icon {
+  background: var(--k, var(--accent));
+  transform: scale(1.08);
+}
+
+.reel-play:focus-visible {
+  outline: 3px solid var(--k, var(--accent));
+  outline-offset: -3px;
+}
+
+/* Site name at the bottom of the cover */
+.reel-source {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  padding: .3rem .6rem;
+  font: 600 .72rem/1 var(--body);
+  color: #fff;
+  background: rgba(10, 12, 20, .7);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+/* Loading message */
+.reel-status {
+  position: relative;
+  display: grid;
   justify-items: center;
   gap: .75rem;
   padding: 1.5rem;
   text-align: center;
-  overflow-wrap: anywhere;
-  color: var(--bay-ink, #fff);
+  color: #fff;
 }
 
-/* Loading cover (on top of the player until it has loaded) */
-.reel-loader {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  gap: .9rem;
-  background:
-    radial-gradient(80% 60% at 50% 0%, color-mix(in srgb, var(--k, var(--accent)) 35%, transparent), transparent 70%),
-    linear-gradient(100deg, #111 30%, #1d1d24 50%, #111 70%);
-  background-size: auto, 200% 100%;
-  animation: reel-shimmer 1.6s linear infinite;
-  pointer-events: none;
-}
-
-.reel-loader-text {
+.reel-status p {
   margin: 0;
   font-size: .9rem;
   font-weight: 500;
-  opacity: .85;
 }
 
 /* Taking too long: the cover goes away, the player stays usable,
-   and only a small "Reload video" pill remains at the bottom. */
-.reel-loader.is-slow {
-  align-content: end;
-  padding-bottom: 1rem;
+   and only a small pill with two buttons remains at the bottom. */
+.reel-cover.is-slow {
+  place-items: end center;
   background: none;
-  animation: none;
+  pointer-events: none;
 }
 
-.reel-loader.is-slow .reel-loader-text {
-  padding: .3rem .7rem;
+.reel-status.is-slow {
+  gap: .5rem;
+  margin-bottom: 1rem;
+  padding: .7rem 1rem;
+  background: rgba(10, 12, 20, .85);
+  border-radius: 16px;
+}
+
+.reel-status.is-slow p {
   font-size: .8rem;
-  background: rgba(10, 12, 20, .75);
-  border-radius: 999px;
-  opacity: 1;
 }
 
-.reel-loader.is-slow button {
+.reel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: .5rem;
   pointer-events: auto;
 }
 
-/* Spinner: gradient ring */
+/* Spinner: gradient ring (only runs while a video is loading) */
 .reel-spinner {
   width: 44px;
   height: 44px;
@@ -4703,12 +4785,21 @@ dialog.cv-card::backdrop {
   animation: reel-spin .9s linear infinite;
 }
 
-/* Fallback when a video link cannot be embedded */
+/* ---------- Fallback when a link cannot be embedded ---------- */
+
 .reel-link,
 .reel-unavailable {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: .75rem;
   width: 100%;
   height: 100%;
   box-sizing: border-box;
+  padding: 1.5rem;
+  text-align: center;
+  overflow-wrap: anywhere;
+  color: var(--bay-ink, #fff);
   background:
     radial-gradient(80% 60% at 50% 0%, color-mix(in srgb, var(--k, var(--accent)) 35%, transparent), transparent 70%),
     var(--bay, #171717);
@@ -4721,24 +4812,27 @@ dialog.cv-card::backdrop {
   text-underline-offset: 3px;
 }
 
-/* ---------- Buttons (Reload / Try again) ---------- */
+/* ---------- Buttons (Reload / Open original / Try again) ---------- */
 
-.reel-loader button,
+.reel-actions button,
+.reel-actions a,
 .reels-error button {
-  padding: .5rem 1rem;
-  font: 600 .85rem var(--body);
+  padding: .45rem .9rem;
+  font: 600 .82rem var(--body);
+  line-height: 1.2;
   color: #fff;
+  text-decoration: none;
   background: rgba(255, 255, 255, .12);
   border: 1px solid rgba(255, 255, 255, .35);
   border-radius: 999px;
   cursor: pointer;
-  transition: background .2s, transform .2s;
+  transition: background .2s;
 }
 
-.reel-loader button:hover,
+.reel-actions button:hover,
+.reel-actions a:hover,
 .reels-error button:hover {
   background: var(--k, var(--accent));
-  transform: translateY(-2px);
 }
 
 /* ---------- Text under the video ---------- */
@@ -4755,49 +4849,11 @@ dialog.cv-card::backdrop {
   transition: color .2s;
 }
 
-.reel:hover .reel-info h3,
-.reel:focus-within .reel-info h3 {
-  color: var(--k, var(--accent));
-}
-
 .reel-info p {
-  margin: 0 0 .75rem;
+  margin: 0;
   font-size: .92rem;
   color: var(--muted);
   overflow-wrap: anywhere;
-}
-
-/* A link becomes a pill button with a sliding arrow */
-.reel-info a {
-  display: inline-flex;
-  align-items: center;
-  gap: .4rem;
-  padding: .4rem .8rem;
-  font-size: .85rem;
-  font-weight: 600;
-  color: var(--ink);
-  text-decoration: none;
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  transition: background .2s, color .2s, border-color .2s;
-}
-
-.reel-info a::after {
-  content: "\2192";
-  transition: transform .25s;
-}
-
-.reel-info a:hover,
-.reel-info a:focus-visible {
-  color: #fff;
-  background: var(--k, var(--accent));
-  border-color: transparent;
-}
-
-.reel-info a:hover::after,
-.reel-info a:focus-visible::after {
-  transform: translateX(4px);
 }
 
 /* ---------- While the video list is loading ---------- */
@@ -4806,7 +4862,6 @@ dialog.cv-card::backdrop {
   display: grid;
   place-items: center;
   aspect-ratio: 9 / 16;
-  border-radius: 18px;
   background: linear-gradient(100deg,
       var(--surface) 30%,
       color-mix(in srgb, var(--accent) 18%, var(--line)) 50%,
@@ -4846,43 +4901,12 @@ dialog.cv-card::backdrop {
 
 /* ---------- Animations ---------- */
 
-@keyframes reel-live {
-  to { box-shadow: 0 0 0 12px transparent; }
-}
-
-@keyframes reel-edge {
-  to { --ang: 360deg; }
-}
-
 @keyframes reel-shimmer {
   to { background-position: -200% 0; }
 }
 
 @keyframes reel-spin {
   to { transform: rotate(360deg); }
-}
-
-/* Heading slides up as it scrolls into view (older browsers just show it) */
-@supports (animation-timeline: view()) {
-  @keyframes reel-rise {
-    from {
-      opacity: 0;
-      translate: 0 28px;
-      scale: .96;
-    }
-
-    to {
-      opacity: 1;
-      translate: 0 0;
-      scale: 1;
-    }
-  }
-
-  .reels-head {
-    animation: reel-rise linear both;
-    animation-timeline: view();
-    animation-range: entry 0% entry 40%;
-  }
 }
 
 /* ---------- Small screens ---------- */
@@ -4903,19 +4927,14 @@ dialog.cv-card::backdrop {
 /* ---------- Reduced motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .reel:hover::before,
-  .reel:focus-within::before,
-  .reel.skeleton,
-  .reel-loader,
-  .reels-head,
-  .reels-head h2::before {
-    animation: none;
+  .reel,
+  .reel:hover {
+    transform: none;
+    transition: none;
   }
 
-  .reel,
-  .reel:hover,
-  .reel:focus-within {
-    transform: none;
+  .reel.skeleton {
+    animation: none;
   }
 
   /* keep a slow spinner so loading is still visible */
