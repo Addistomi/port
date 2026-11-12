@@ -6,11 +6,16 @@ import { db, configured } from "../firebase.js";
    Settings
    ========================================================================== */
 
-const SLOW_AFTER_MS = 8000; // after this, the cover is replaced by a "Reload" pill
-const FETCH_ATTEMPTS = 3;   // tries for the Firestore video list
+const SLOW_AFTER_MS = 8000;        // after this, a "Reload / Open original" pill appears
+const FETCH_ATTEMPTS = 3;          // tries for the Firestore video list
+const CACHE_KEY = "reels:list:v1"; // last good list, shown instantly on repeat visits
 
 const IFRAME_SRC = /<iframe\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/i;
 const VIDEO_FILE = /\.(mp4|webm|mov|m4v|ogv)$/i;
+const VIMEO_PLAYER = /^https:\/\/player\.vimeo\.com\//;
+
+const saveData = () =>
+  typeof navigator !== "undefined" && navigator.connection?.saveData === true;
 
 /* ==========================================================================
    Video links
@@ -44,9 +49,23 @@ function cleanVimeoUrl(href) {
   }
 }
 
+/** Adds autoplay for players that support it (used after the viewer taps play). */
+function withAutoplay(href) {
+  try {
+    const url = new URL(href);
+    if (url.hostname.endsWith("youtube.com") || url.hostname === "player.vimeo.com") {
+      url.searchParams.set("autoplay", "1");
+    }
+    return url.href;
+  } catch {
+    return href;
+  }
+}
+
 /**
- * One entry per supported site. `embed` returns the player URL,
- * or a falsy value when the link does not point to a video.
+ * One entry per supported site.
+ *   embed  -> player URL, or a falsy value when the link is not a video
+ *   poster -> optional cover image URL that needs no network lookup
  */
 const PROVIDERS = [
   {
@@ -66,6 +85,10 @@ const PROVIDERS = [
         : path === "/watch" ? url.searchParams.get("v")
         : path.match(/^\/(?:shorts|embed|live|v)\/([\w-]{6,})/)?.[1];
       return id && `https://www.youtube.com/embed/${encodeURIComponent(id)}?playsinline=1&rel=0`;
+    },
+    poster: (embedUrl) => {
+      const id = new URL(embedUrl).pathname.split("/").pop();
+      return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
     },
   },
   {
@@ -108,10 +131,10 @@ const PROVIDERS = [
 
 /**
  * Works out how to show a link:
- *   { type: "embed", embedUrl }  -> <iframe>
- *   { type: "file",  fileUrl }   -> <video>
- *   { type: "link" }             -> plain link (not embeddable)
- *   null                         -> not a valid URL
+ *   { type: "embed", embedUrl, poster? } -> <iframe> (after the viewer taps play)
+ *   { type: "file",  fileUrl }           -> <video>  (after the viewer taps play)
+ *   { type: "link" }                     -> plain link (not embeddable)
+ *   null                                 -> not a valid URL
  */
 function getVideoInfo(value = "") {
   const url = parseUrl(value);
@@ -128,7 +151,9 @@ function getVideoInfo(value = "") {
   for (const provider of PROVIDERS) {
     if (!provider.match(host)) continue;
     const embedUrl = provider.embed(context);
-    if (embedUrl) return { type: "embed", name: provider.name, embedUrl };
+    if (embedUrl) {
+      return { type: "embed", name: provider.name, embedUrl, poster: provider.poster?.(embedUrl) };
+    }
   }
 
   if (VIDEO_FILE.test(url.pathname)) {
@@ -136,6 +161,43 @@ function getVideoInfo(value = "") {
   }
 
   return { type: "link", name: host };
+}
+
+/* ==========================================================================
+   Small helpers (network)
+   ========================================================================== */
+
+const posterCache = new Map();
+
+/** Vimeo cover image through oEmbed. Cached, and returns "" on any failure. */
+function vimeoPoster(embedUrl) {
+  if (!posterCache.has(embedUrl)) {
+    const request = fetch(
+      `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(embedUrl)}&width=480`
+    )
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => data?.thumbnail_url || "")
+      .catch(() => "");
+    posterCache.set(embedUrl, request);
+  }
+  return posterCache.get(embedUrl);
+}
+
+const warmedOrigins = new Set();
+
+/** Opens the connection to a player a moment before the viewer taps play. */
+function warmUp(href) {
+  try {
+    const { origin } = new URL(href);
+    if (warmedOrigins.has(origin)) return;
+    warmedOrigins.add(origin);
+    const link = document.createElement("link");
+    link.rel = "preconnect";
+    link.href = origin;
+    document.head.appendChild(link);
+  } catch {
+    /* ignore */
+  }
 }
 
 /* ==========================================================================
@@ -163,10 +225,11 @@ function useOnline() {
 }
 
 /**
- * True once the element is close to the screen. Used instead of
- * loading="lazy", which is unreliable in a sideways scrolling row.
+ * True once the element is close to the visible part of the scrolling row.
+ * The row itself is the observer root, because rootMargin does not reach
+ * past an ancestor scroll container when the root is the page.
  */
-function useNearScreen(ref, margin = "300px 400px") {
+function useNearScreen(ref, rootRef, margin = "0px 400px") {
   const [near, setNear] = useState(false);
 
   useEffect(() => {
@@ -185,20 +248,38 @@ function useNearScreen(ref, margin = "300px 400px") {
           observer.disconnect();
         }
       },
-      { rootMargin: margin }
+      { root: rootRef?.current ?? null, rootMargin: margin }
     );
 
     observer.observe(element);
     return () => observer.disconnect();
-  }, [ref, near, margin]);
+  }, [ref, rootRef, near, margin]);
 
   return near;
 }
 
+/** Cover image: a given one, an automatic one, or a Vimeo one (looked up once). */
+function usePoster(video, info, enabled) {
+  const given = video.poster || info?.poster || "";
+  const embedUrl = info?.type === "embed" ? info.embedUrl : "";
+  const [fetched, setFetched] = useState("");
+
+  useEffect(() => {
+    if (given || !enabled || !VIMEO_PLAYER.test(embedUrl) || saveData()) return undefined;
+    let alive = true;
+    vimeoPoster(embedUrl).then((url) => {
+      if (alive) setFetched(url);
+    });
+    return () => { alive = false; };
+  }, [given, enabled, embedUrl]);
+
+  return given || fetched;
+}
+
 /**
- * Tracks one player while it loads. If it has not reported "loaded" after a
- * while, `slow` turns on. The player itself is never hidden, because
- * embeds often work without ever firing a load event.
+ * Tracks one player after the viewer taps play. If it has not reported
+ * "loaded" after a while, `slow` turns on. The player is never hidden for
+ * good, because embeds often work without ever firing a load event.
  */
 function usePlayerLoad(enabled) {
   const [attempt, setAttempt] = useState(0);
@@ -232,35 +313,39 @@ function usePlayerLoad(enabled) {
    Components
    ========================================================================== */
 
-/** Cover shown over a player until it has loaded (or has taken too long). */
-function Loader({ slow, onRetry }) {
+/** Message shown over the cover while the player loads. */
+function Loader({ slow, onRetry, href }) {
+  if (!slow) {
+    return (
+      <div className="reel-status" role="status" aria-live="polite">
+        <span className="reel-spinner" aria-hidden="true" />
+        <p>Loading video…</p>
+      </div>
+    );
+  }
+
   return (
-    <div className={`reel-loader${slow ? " is-slow" : ""}`} role="status" aria-live="polite">
-      {slow ? (
-        <>
-          <p className="reel-loader-text">Taking longer than usual…</p>
-          <button type="button" onClick={onRetry}>Reload video</button>
-        </>
-      ) : (
-        <>
-          <span className="reel-spinner" aria-hidden="true" />
-          <p className="reel-loader-text">Loading video…</p>
-        </>
-      )}
+    <div className="reel-status is-slow" role="status" aria-live="polite">
+      <p>Taking longer than usual…</p>
+      <div className="reel-actions">
+        <button type="button" onClick={onRetry}>Reload</button>
+        <a href={href} target="_blank" rel="noopener noreferrer">Open original ↗</a>
+      </div>
     </div>
   );
 }
 
-function ReelMedia({ video }) {
+function ReelMedia({ video, rootRef, active, onActivate }) {
   const source = video.embedCode || video.url || "";
   const info = useMemo(() => getVideoInfo(source), [source]);
   const linkUrl = useMemo(() => extractSource(video.url || source), [video.url, source]);
 
   const frameRef = useRef(null);
-  const near = useNearScreen(frameRef);
+  const near = useNearScreen(frameRef, rootRef);
+  const poster = usePoster(video, info, near);
+  const load = usePlayerLoad(active);
 
   const isPlayable = info?.type === "embed" || info?.type === "file";
-  const load = usePlayerLoad(isPlayable && near);
 
   // Not embeddable: show a message or a plain link instead of a player.
   if (!isPlayable) {
@@ -279,15 +364,19 @@ function ReelMedia({ video }) {
   }
 
   const title = video.title || (info.type === "embed" ? `${info.name} video` : "Video");
+  const slow = active && load.slow;
+  const warm = () => warmUp(info.embedUrl || info.fileUrl);
 
   return (
-    <div className={`reel-frame${load.ready ? " is-ready" : ""}`} ref={frameRef}>
-      {near && info.type === "file" && (
+    <div className="reel-frame" ref={frameRef}>
+      {active && info.type === "file" && (
         <video
           key={load.attempt}
           src={info.fileUrl}
           title={title}
+          poster={poster || undefined}
           controls
+          autoPlay
           playsInline
           preload="metadata"
           onLoadedData={load.markReady}
@@ -295,10 +384,10 @@ function ReelMedia({ video }) {
         />
       )}
 
-      {near && info.type === "embed" && (
+      {active && info.type === "embed" && (
         <iframe
           key={load.attempt}
-          src={info.embedUrl}
+          src={withAutoplay(info.embedUrl)}
           title={title}
           allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
           allowFullScreen
@@ -307,15 +396,42 @@ function ReelMedia({ video }) {
         />
       )}
 
-      {!load.ready && <Loader slow={load.slow} onRetry={load.retry} />}
+      {!load.ready && (
+        <div className={`reel-cover${slow ? " is-slow" : active ? " is-loading" : ""}`}>
+          {near && poster && !slow && (
+            <img className="reel-poster" src={poster} alt="" decoding="async" draggable="false" />
+          )}
+
+          {active ? (
+            <Loader slow={slow} onRetry={load.retry} href={linkUrl} />
+          ) : (
+            <>
+              <button
+                type="button"
+                className="reel-play"
+                aria-label={`Play ${title}`}
+                onClick={onActivate}
+                onPointerEnter={warm}
+                onFocus={warm}
+              >
+                <span className="reel-play-icon" aria-hidden="true" />
+              </button>
+              <span className="reel-source">{info.name}</span>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function ReelCard({ video }) {
+function ReelCard({ video, rootRef }) {
+  const [active, setActive] = useState(false);
+  const activate = useCallback(() => setActive(true), []);
+
   return (
-    <article className="reel">
-      <ReelMedia video={video} />
+    <article className={`reel${active ? " is-playing" : ""}`}>
+      <ReelMedia video={video} rootRef={rootRef} active={active} onActivate={activate} />
       {(video.title || video.description) && (
         <div className="reel-info">
           {video.title && <h3>{video.title}</h3>}
@@ -332,6 +448,23 @@ function ReelCard({ video }) {
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function readCache() {
+  try {
+    const list = JSON.parse(localStorage.getItem(CACHE_KEY));
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCache(list) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(list));
+  } catch {
+    /* storage full or blocked: ignore */
+  }
+}
+
 /** Loads published videos from Firestore, retrying with a growing pause. */
 async function fetchVideos() {
   let lastError;
@@ -341,8 +474,11 @@ async function fetchVideos() {
       const snapshot = await getDocs(query(collection(db, "tiktoks"), orderBy("order")));
 
       return snapshot.docs
-        .map((document) => ({ id: document.id, ...document.data() }))
-        .filter((video) => video.published === true && (video.url || video.embedCode));
+        .map((entry) => ({ id: entry.id, ...entry.data() }))
+        .filter((video) => video.published === true && (video.url || video.embedCode))
+        .map(({ id, title, description, url, embedCode, poster }) => ({
+          id, title, description, url, embedCode, poster,
+        }));
     } catch (error) {
       lastError = error;
       if (index < FETCH_ATTEMPTS - 1) await wait(700 * 2 ** index); // 0.7s, 1.4s
@@ -357,25 +493,35 @@ async function fetchVideos() {
    ========================================================================== */
 
 export default function TikTokReels() {
-  const [items, setItems] = useState([]);
-  const [status, setStatus] = useState(configured && db ? "loading" : "off");
+  const canLoad = Boolean(configured && db);
+
+  const [items, setItems] = useState(() => (canLoad ? readCache() : []));
+  const [status, setStatus] = useState(() =>
+    !canLoad ? "off" : items.length ? "ready" : "loading"
+  );
   const [reloadKey, setReloadKey] = useState(0);
   const online = useOnline();
   const wasOffline = useRef(false);
+  const rowRef = useRef(null);
 
   const reload = useCallback(() => setReloadKey((value) => value + 1), []);
 
   // Load the list (again whenever `reload` is called).
   useEffect(() => {
-    if (!configured || !db) return undefined;
+    if (!canLoad) {
+      console.warn("Reels: Firebase is not configured, so the section is hidden.");
+      return undefined;
+    }
+
     let alive = true;
-    setStatus("loading");
+    setStatus((current) => (current === "ready" ? current : "loading"));
 
     fetchVideos()
       .then((videos) => {
         if (!alive) return;
         setItems(videos);
         setStatus("ready");
+        writeCache(videos);
       })
       .catch((error) => {
         console.error("Video loading failed:", error);
@@ -383,7 +529,7 @@ export default function TikTokReels() {
       });
 
     return () => { alive = false; };
-  }, [reloadKey]);
+  }, [canLoad, reloadKey]);
 
   // When the connection comes back, load the list again.
   useEffect(() => {
@@ -395,7 +541,25 @@ export default function TikTokReels() {
     }
   }, [online, reload]);
 
-  if (status === "off" || (status === "ready" && items.length === 0)) return null;
+  // Arrow buttons for mouse users.
+  const scrollRow = useCallback((direction) => {
+    const row = rowRef.current;
+    if (!row) return;
+    const card = row.querySelector(".reel");
+    const gap = parseFloat(getComputedStyle(row).columnGap) || 16;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    row.scrollBy({
+      left: direction * ((card?.offsetWidth ?? 280) + gap),
+      behavior: reduce ? "auto" : "smooth",
+    });
+  }, []);
+
+  const hasItems = items.length > 0;
+
+  if (status === "off" || (status === "ready" && !hasItems)) return null;
+
+  const showError = status === "error" && !hasItems;
+  const showSkeleton = status === "loading" && !hasItems;
 
   return (
     <section
@@ -405,18 +569,27 @@ export default function TikTokReels() {
       aria-busy={status === "loading"}
     >
       <div className="reels-head">
-        <h2 id="reelsTitle">Short cuts</h2>
-        <p>Quick edits from my videos. Swipe to see more.</p>
+        <div>
+          <h2 id="reelsTitle">Short cuts</h2>
+          <p>Quick edits from my videos. Tap one to play.</p>
+        </div>
+
+        {items.length > 1 && (
+          <div className="reels-nav">
+            <button type="button" onClick={() => scrollRow(-1)} aria-label="Previous videos">‹</button>
+            <button type="button" onClick={() => scrollRow(1)} aria-label="Next videos">›</button>
+          </div>
+        )}
       </div>
 
-      {status === "error" ? (
+      {showError ? (
         <div className="reels-error" role="alert">
           <p>{online ? "The videos couldn't be loaded." : "No internet connection."}</p>
           <button type="button" onClick={reload}>Try again</button>
         </div>
       ) : (
-        <div className="reels-row">
-          {status === "loading" &&
+        <div className="reels-row" ref={rowRef}>
+          {showSkeleton &&
             [0, 1, 2].map((index) => (
               <div className="reel skeleton" key={index} aria-hidden="true">
                 <span className="reel-spinner" />
@@ -424,7 +597,7 @@ export default function TikTokReels() {
             ))}
 
           {items.map((video) => (
-            <ReelCard key={video.id} video={video} />
+            <ReelCard key={video.id} video={video} rootRef={rowRef} />
           ))}
         </div>
       )}
